@@ -5,10 +5,11 @@ from datetime import datetime
 HISTORY_FILE = Path(__file__).parent / "description_history.csv"
 COLUMNS = [
     "mode", "sub_mode", "pair", "tp_percent", "sl_percent",
-    "win_rate_percent", "total_pnl_percent", "average_pnl_percent",
-    "average_hold_hours", "tp_hit_count", "sl_hit_count",
-    "manual_close_count", "tp_hit_percent", "sl_hit_percent",
-    "manual_close_percent", "trade_count",
+    "risk_to_reward_ratio", "win_rate_percent", "total_pnl_percent",
+    "average_pnl_percent", "average_pnl_last_10", "average_hold_hours",
+    "tp_hit_count", "sl_hit_count", "manual_close_count",
+    "tp_hit_percent", "sl_hit_percent", "manual_close_percent",
+    "trade_count", "cv",
 ]
 
 
@@ -34,9 +35,11 @@ def generate_description(data, asset, direction):
     sub_mode = data["sub_mode"]
     tp = data["tp_percent"]
     sl = data["sl_percent"]
+    rr = data["risk_to_reward_ratio"]
     wr = data["win_rate_percent"]
     total_pnl = data["total_pnl_percent"]
     avg_pnl = data["average_pnl_percent"]
+    avg_pnl_10 = data["average_pnl_last_10"]
     avg_hold = data["average_hold_hours"]
     tp_hit_n = data["tp_hit_count"]
     sl_hit_n = data["sl_hit_count"]
@@ -45,6 +48,7 @@ def generate_description(data, asset, direction):
     sl_hit_p = data["sl_hit_percent"]
     manual_p = data["manual_close_percent"]
     trades_n = data["trade_count"]
+    cv_val = data["cv"]
 
     direction_upper = direction.upper()
     asset_upper = asset.upper()
@@ -57,14 +61,17 @@ def generate_description(data, asset, direction):
 
     tp_f = float(tp)
     sl_f = float(sl)
+    rr_f = float(rr)
     wr_f = float(wr)
     total_f = float(total_pnl)
     avg_f = float(avg_pnl)
+    avg10_f = float(avg_pnl_10)
     hold_f = float(avg_hold)
     tp_hit_f = float(tp_hit_p)
     sl_hit_f = float(sl_hit_p)
     manual_f = float(manual_p)
     trades_f = float(trades_n)
+    cv_f = float(cv_val)
 
     lines = []
     lines.append(f"# Trading Idea: {direction_upper} {asset_upper}")
@@ -74,8 +81,10 @@ def generate_description(data, asset, direction):
     lines.append("")
     lines.append("## Performance Summary")
     lines.append(f"- Win Rate: {wr_f:.2f}%")
+    lines.append(f"- Risk/Reward Ratio: {rr_f:.2f}")
     lines.append(f"- Total PnL: {pnl_sign}{total_f:.2f}%")
     lines.append(f"- Avg PnL per Trade: {avg_sign}{avg_f:.2f}%")
+    lines.append(f"- Avg PnL (Last 10 Trades): {avg_sign}{avg10_f:.2f}%")
     lines.append(f"- Avg Hold Time: {hold_f:.1f} hours")
     lines.append("")
     lines.append("## Trade Distribution")
@@ -83,6 +92,7 @@ def generate_description(data, asset, direction):
     lines.append(f"- SL Hit: {sl_hit_f:.2f}% ({int(sl_hit_n)} trades)")
     lines.append(f"- Manual Close: {manual_f:.2f}% ({int(manual_n)} trades)")
     lines.append(f"- Total Trades: {int(trades_n)}")
+    lines.append(f"- Coefficient of Variation: {cv_f:.4f}")
     lines.append("")
 
     analysis_parts = []
@@ -136,8 +146,9 @@ def write_description():
 
     print(f"\nParsed data for {data['pair']}:")
     print(f"  Mode: {data['mode']} | Sub-mode: {data['sub_mode']}")
-    print(f"  Win Rate: {data['win_rate_percent']}% | Total PnL: {data['total_pnl_percent']}%")
-    print(f"  TP: {data['tp_percent']}% | SL: {data['sl_percent']}% | Trades: {data['trade_count']}")
+    print(f"  Win Rate: {data['win_rate_percent']}% | R:R: {data['risk_to_reward_ratio']}")
+    print(f"  Total PnL: {data['total_pnl_percent']}% | Avg PnL: {data['average_pnl_percent']}% | Avg10: {data['average_pnl_last_10']}%")
+    print(f"  TP: {data['tp_percent']}% | SL: {data['sl_percent']}% | Trades: {data['trade_count']} | CV: {data['cv']}")
 
     asset = input(f"\nAsset (default: {data['pair']}): ").strip().upper()
     if not asset:
