@@ -222,27 +222,14 @@ def simulate_trade(df, entry_time, direction, tp_pct, sl_pct):
 
     positive_hours = 0.0
     negative_hours = 0.0
-    prev_time = entry_time
 
     for current_time, row in window.iterrows():
-        candle_duration = (current_time - prev_time).total_seconds() / 3600
-        if candle_duration > 0:
-            close_price = float(row["Close"])
-            if close_price > entry_price:
-                positive_hours += candle_duration
-            elif close_price < entry_price:
-                negative_hours += candle_duration
-            else:
-                positive_hours += candle_duration / 2
-                negative_hours += candle_duration / 2
-        prev_time = current_time
-
         if direction == "long":
             tp_hit = row["High"] >= tp_price
             sl_hit = row["Low"] <= sl_price
         else:
             tp_hit = row["Low"] <= tp_price
-            sl_hit = row["High"] <= sl_price
+            sl_hit = row["High"] >= sl_price
 
         hold_hours = (current_time - entry_time).total_seconds() / 3600
 
@@ -254,6 +241,19 @@ def simulate_trade(df, entry_time, direction, tp_pct, sl_pct):
             return {"pnl_pct": calculate_pnl(entry_price, tp_price, direction), "exit_reason": "TP Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
         if sl_hit:
             return {"pnl_pct": calculate_pnl(entry_price, sl_price, direction), "exit_reason": "SL Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
+
+        if hold_hours > 0:
+            close_price = float(row["Close"])
+            if direction == "long":
+                if close_price > entry_price:
+                    positive_hours += 1.0
+                elif close_price < entry_price:
+                    negative_hours += 1.0
+            else:
+                if close_price < entry_price:
+                    positive_hours += 1.0
+                elif close_price > entry_price:
+                    negative_hours += 1.0
 
     manual_exit_price = float(window.iloc[-1]["Close"])
     actual_hold_hours = (window.index[-1] - entry_time).total_seconds() / 3600
@@ -283,16 +283,12 @@ def summarize_trades(trades, mode, sub_mode, pair, tp, sl):
         if neg > 0:
             ratios.append(pos / neg)
         elif pos > 0:
-            ratios.append(float("inf"))
+            ratios.append(pos)
         else:
             ratios.append(0.0)
     pnl_mean = pnl_arr.mean()
     last_10_pnl = pnl_arr[-10:].mean() * 100
     mean_ratio = np.mean(ratios) if ratios else 0.0
-    if np.isinf(mean_ratio):
-        mean_ratio_str = "Inf"
-    else:
-        mean_ratio_str = f"{mean_ratio:.2f}"
     return {
         "mode": mode,
         "sub_mode": sub_mode or "N/A",
@@ -305,7 +301,7 @@ def summarize_trades(trades, mode, sub_mode, pair, tp, sl):
         "average_pnl_percent": pnl_mean * 100,
         "average_pnl_last_10": last_10_pnl,
         "average_hold_hours": hold_arr.mean(),
-        "positive_negative_ratio_mean": mean_ratio_str,
+        "positive_negative_ratio_mean": round(mean_ratio, 2),
         "tp_hit_count": tp_hit_count,
         "sl_hit_count": sl_hit_count,
         "manual_close_count": manual_close_count,
