@@ -2,16 +2,17 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from scipy import stats
 import re
 
 DATA_DIR = Path(".")
 OUTPUT_DIR = DATA_DIR / "results"
 
-TP_VALUES = [x / 1000 for x in range(2, 10)]
-SL_VALUES = [x / 1000 for x in range(2, 10)]
+TP_VALUES = [x / 1000 for x in range(1, 11)]
+SL_VALUES = [x / 1000 for x in range(1, 11)]
 
 SAME_CANDLE_RULE = "sl_first"
+ESTIMATED_ROLLOVER_FEE_PERCENT_PER_DAY = 0.01
+ROLLOVER_HOUR_UTC = 0
 
 ASSET_TIMEZONES = {
     "USD": "America/New_York",
@@ -34,27 +35,6 @@ pair_sets = {
     "CHF": ["USDCHF", "EURCHF", "GBPCHF", "AUDCHF", "NZDCHF", "CADCHF", "CHFJPY"],
     "CAD": ["USDCAD", "EURCAD", "GBPCAD", "AUDCAD", "NZDCAD", "CADCHF", "CADJPY"],
 }
-
-
-def wilson_ci(wins, n, confidence=0.95):
-    if n == 0:
-        return 0.0, 1.0
-    p_hat = wins / n
-    z = stats.norm.ppf(1 - (1 - confidence) / 2)
-    denom = 1 + z**2 / n
-    center = (p_hat + z**2 / (2 * n)) / denom
-    spread = z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4 * n)) / n) / denom
-    return max(0, center - spread), min(1, center + spread)
-
-
-def beta_weighted_ev(wins, losses, rr, ci_low, ci_high, n_points=500):
-    a = wins + 0.5
-    b = losses + 0.5
-    x = np.linspace(ci_low, ci_high, n_points)
-    pdf = stats.beta.pdf(x, a, b)
-    pdf /= pdf.sum()
-    ev_per_rate = x * rr - (1 - x)
-    return float(np.sum(pdf * ev_per_rate))
 
 
 def choose_trading_mode():
@@ -213,6 +193,26 @@ def calculate_pnl(entry_price, exit_price, direction):
     return (entry_price - exit_price) / entry_price
 
 
+def calculate_rollover_fee_percent(entry_time, exit_time):
+    entry_day = (entry_time - pd.Timedelta(hours=ROLLOVER_HOUR_UTC)).date()
+    exit_day = (exit_time - pd.Timedelta(hours=ROLLOVER_HOUR_UTC)).date()
+    rollover_count = max(0, (exit_day - entry_day).days)
+    return rollover_count * ESTIMATED_ROLLOVER_FEE_PERCENT_PER_DAY
+
+
+def build_trade_result(entry_price, exit_price, direction, entry_time, exit_time):
+    hold_hours = (exit_time - entry_time).total_seconds() / 3600
+    gross_pnl_pct = calculate_pnl(entry_price, exit_price, direction)
+    rollover_fee_percent = calculate_rollover_fee_percent(entry_time, exit_time)
+    rollover_fee_pct = rollover_fee_percent / 100
+    return {
+        "pnl_pct": gross_pnl_pct - rollover_fee_pct,
+        "gross_pnl_pct": gross_pnl_pct,
+        "rollover_fee_percent": rollover_fee_percent,
+        "hold_hours": hold_hours,
+    }
+
+
 def get_end_of_week_cutoff(entry_time):
     days_ahead = 4 - entry_time.weekday()
     if days_ahead < 0 or (days_ahead == 0 and entry_time.hour >= 18):
@@ -242,9 +242,6 @@ def simulate_trade(df, entry_time, direction, tp_pct, sl_pct):
     if window.empty:
         return None
 
-    positive_hours = 0.0
-    negative_hours = 0.0
-
     for current_time, row in window.iterrows():
         if direction == "long":
             tp_hit = row["High"] >= tp_price
@@ -253,70 +250,28 @@ def simulate_trade(df, entry_time, direction, tp_pct, sl_pct):
             tp_hit = row["Low"] <= tp_price
             sl_hit = row["High"] >= sl_price
 
-        hold_hours = (current_time - entry_time).total_seconds() / 3600
-
         if tp_hit and sl_hit:
             if SAME_CANDLE_RULE == "sl_first":
-                return {"pnl_pct": calculate_pnl(entry_price, sl_price, direction), "exit_reason": "SL Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
-            return {"pnl_pct": calculate_pnl(entry_price, tp_price, direction), "exit_reason": "TP Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
+                return build_trade_result(entry_price, sl_price, direction, entry_time, current_time)
+            return build_trade_result(entry_price, tp_price, direction, entry_time, current_time)
         if tp_hit:
-            return {"pnl_pct": calculate_pnl(entry_price, tp_price, direction), "exit_reason": "TP Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
+            return build_trade_result(entry_price, tp_price, direction, entry_time, current_time)
         if sl_hit:
-            return {"pnl_pct": calculate_pnl(entry_price, sl_price, direction), "exit_reason": "SL Hit", "hold_hours": hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
-
-        if hold_hours > 0:
-            close_price = float(row["Close"])
-            if direction == "long":
-                if close_price > entry_price:
-                    positive_hours += 1.0
-                elif close_price < entry_price:
-                    negative_hours += 1.0
-            else:
-                if close_price < entry_price:
-                    positive_hours += 1.0
-                elif close_price > entry_price:
-                    negative_hours += 1.0
+            return build_trade_result(entry_price, sl_price, direction, entry_time, current_time)
 
     manual_exit_price = float(window.iloc[-1]["Close"])
-    actual_hold_hours = (window.index[-1] - entry_time).total_seconds() / 3600
-    return {"pnl_pct": calculate_pnl(entry_price, manual_exit_price, direction), "exit_reason": "End of Week", "hold_hours": actual_hold_hours, "positive_hours": positive_hours, "negative_hours": negative_hours}
+    return build_trade_result(entry_price, manual_exit_price, direction, entry_time, window.index[-1])
 
 
 def summarize_trades(trades, mode, sub_mode, pair, tp, sl):
     trade_count = len(trades)
     pnl_arr = np.empty(trade_count)
     hold_arr = np.empty(trade_count)
-    tp_hit_count = 0
-    sl_hit_count = 0
-    manual_close_count = 0
-    ratios = []
+    rollover_arr = np.empty(trade_count)
     for i, t in enumerate(trades):
         pnl_arr[i] = t["pnl_pct"]
         hold_arr[i] = t["hold_hours"]
-        reason = t["exit_reason"]
-        if reason == "TP Hit":
-            tp_hit_count += 1
-        elif reason == "SL Hit":
-            sl_hit_count += 1
-        else:
-            manual_close_count += 1
-        pos = t["positive_hours"]
-        neg = t["negative_hours"]
-        if neg > 0:
-            ratios.append(pos / neg)
-        elif pos > 0:
-            ratios.append(pos)
-        else:
-            ratios.append(0.0)
-    pnl_mean = pnl_arr.mean()
-    last_10_pnl = pnl_arr[-10:].mean() * 100
-    mean_ratio = np.mean(ratios) if ratios else 0.0
-
-    rr = tp / sl
-    wins = int(round(float((pnl_arr > 0).sum())))
-    losses = trade_count - wins
-    ci_low, ci_high = wilson_ci(wins, trade_count)
-    beta_ev = beta_weighted_ev(wins, losses, rr, ci_low, ci_high)
+        rollover_arr[i] = t["rollover_fee_percent"]
 
     return {
         "mode": mode,
@@ -324,23 +279,13 @@ def summarize_trades(trades, mode, sub_mode, pair, tp, sl):
         "pair": pair,
         "tp_percent": tp * 100,
         "sl_percent": sl * 100,
-        "risk_to_reward_ratio": rr,
+        "risk_to_reward_ratio": tp / sl,
         "win_rate_percent": float((pnl_arr > 0).sum()) / trade_count * 100,
         "total_pnl_percent": pnl_arr.sum() * 100,
-        "average_pnl_percent": pnl_mean * 100,
-        "average_pnl_last_10": last_10_pnl,
+        "average_pnl_percent": pnl_arr.mean() * 100,
         "average_hold_hours": hold_arr.mean(),
-        "positive_negative_ratio_mean": round(mean_ratio, 2),
-        "tp_hit_count": tp_hit_count,
-        "sl_hit_count": sl_hit_count,
-        "manual_close_count": manual_close_count,
-        "tp_hit_percent": tp_hit_count / trade_count * 100,
-        "sl_hit_percent": sl_hit_count / trade_count * 100,
-        "manual_close_percent": manual_close_count / trade_count * 100,
-        "trade_count": trade_count,
-        "ci_lower": round(ci_low * 100, 1),
-        "ci_upper": round(ci_high * 100, 1),
-        "beta_weighted_ev_R": round(beta_ev, 4),
+        "total_rollover_fee_percent": rollover_arr.sum(),
+        "average_rollover_fee_percent": rollover_arr.mean(),
     }
 
 
@@ -383,10 +328,8 @@ def grid_search(pair, df, mode, event_currency, news_df):
 
 METRIC_COLS = [
     "win_rate_percent", "total_pnl_percent", "average_pnl_percent",
-    "average_pnl_last_10", "average_hold_hours", "positive_negative_ratio_mean",
-    "tp_hit_count", "sl_hit_count", "manual_close_count",
-    "tp_hit_percent", "sl_hit_percent", "manual_close_percent",
-    "trade_count", "ci_lower", "ci_upper", "beta_weighted_ev_R",
+    "average_hold_hours", "total_rollover_fee_percent",
+    "average_rollover_fee_percent",
 ]
 
 
@@ -491,11 +434,17 @@ def main():
 
     group_cols = ["mode", "sub_mode", "pair", "tp_percent", "sl_percent", "risk_to_reward_ratio"]
 
-    train_all_sorted = train_all.sort_values("beta_weighted_ev_R", ascending=False) if not train_all.empty else pd.DataFrame(columns=group_cols + METRIC_COLS)
-    fwd_all_sorted = fwd_all.sort_values("beta_weighted_ev_R", ascending=False) if not fwd_all.empty else pd.DataFrame(columns=group_cols + METRIC_COLS)
+    train_all_sorted = train_all.sort_values("total_pnl_percent", ascending=False) if not train_all.empty else pd.DataFrame(columns=group_cols + METRIC_COLS)
+    fwd_all_sorted = fwd_all.sort_values("total_pnl_percent", ascending=False) if not fwd_all.empty else pd.DataFrame(columns=group_cols + METRIC_COLS)
 
     merged_all = merge_train_fwd(train_all_sorted, fwd_all_sorted, group_cols)
     merged_all.insert(0, "Strategy_ID", range(1, len(merged_all) + 1))
+    merged_all["total_pnl_delta"] = (merged_all["total_pnl_percent_TRAIN"] - merged_all["total_pnl_percent_FWD"]).abs()
+
+    ranked = merged_all.sort_values(
+        ["total_pnl_delta", "pair"], ascending=[True, True],
+    ).reset_index(drop=True)
+    ranked.insert(0, "number", range(1, len(ranked) + 1))
 
     display_cols = ["Strategy_ID"] + group_cols
     for col in METRIC_COLS:
@@ -505,37 +454,20 @@ def main():
             display_cols.append(t_col)
         if f_col in merged_all.columns:
             display_cols.append(f_col)
+        if col == "total_pnl_percent":
+            display_cols.append("total_pnl_delta")
     merged_all = merged_all[[c for c in display_cols if c in merged_all.columns]]
 
     best_group_cols = ["pair", "sub_mode"] if mode == "candle_colour" else ["pair"]
-    best_merge_cols = best_group_cols + ["tp_percent", "sl_percent", "risk_to_reward_ratio"]
-
-    best_train = (
-        train_all_sorted.sort_values(
-            best_group_cols + ["beta_weighted_ev_R"],
-            ascending=[True] * len(best_group_cols) + [False],
+    best_merged = (
+        merged_all.sort_values(
+            best_group_cols + ["total_pnl_delta"],
+            ascending=[True] * len(best_group_cols) + [True],
         )
         .groupby(best_group_cols, as_index=False)
         .first()
-    ) if not train_all.empty else pd.DataFrame()
-
-    best_fwd = (
-        fwd_all_sorted.sort_values(
-            best_group_cols + ["beta_weighted_ev_R"],
-            ascending=[True] * len(best_group_cols) + [False],
-        )
-        .groupby(best_group_cols, as_index=False)
-        .first()
-    ) if not fwd_all.empty else pd.DataFrame()
-
-    if not best_train.empty and not best_fwd.empty:
-        best_merged = merge_train_fwd(best_train, best_fwd, best_group_cols)
-    elif not best_train.empty:
-        best_merged = best_train.copy()
-    else:
-        best_merged = best_fwd.copy()
-
-    best_merged.insert(0, "Strategy_ID", range(1, len(best_merged) + 1))
+    )
+    best_merged["Strategy_ID"] = range(1, len(best_merged) + 1)
 
     best_display = ["Strategy_ID"] + best_group_cols + ["tp_percent", "sl_percent", "risk_to_reward_ratio"]
     for col in METRIC_COLS:
@@ -545,15 +477,12 @@ def main():
             best_display.append(t_col)
         if f_col in best_merged.columns:
             best_display.append(f_col)
+        if col == "total_pnl_percent":
+            best_display.append("total_pnl_delta")
     best_merged = best_merged[[c for c in best_display if c in best_merged.columns]]
 
-    ranked = merged_all.sort_values(
-        ["pair", "beta_weighted_ev_R_TRAIN"], ascending=[True, False],
-    )
-    ranked.insert(0, "number", range(1, len(ranked) + 1))
-
     clean_time = entry_time.replace(":", "")
-    output_file = f"{group}_{clean_time}_v16.xlsx"
+    output_file = f"{group}_{clean_time}_v18.xlsx"
     OUTPUT_DIR.mkdir(exist_ok=True)
     output_path = OUTPUT_DIR / output_file
 

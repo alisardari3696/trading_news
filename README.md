@@ -4,7 +4,7 @@ Backtest forex trading strategies using economic calendar data from **Forex Fact
 
 ## How It Works
 
-1. **Get price data** — Download 1-hour OHLC data for 7 currency pairs per group via `Gathering prices main.py` (uses Yahoo Finance)
+1. **Get price data** — Download 1-hour OHLC data for 7 currency pairs per group via `GatheringPrice.py` (uses Yahoo Finance)
 2. **Get news data** — Copy-paste the Forex Factory calendar (History / Actual / Forecast / Previous columns) directly into the terminal
 3. **Run the analysis** — Choose a currency group, entry time, and let the script grid-search over TP/SL combinations (0.002–0.011)
 4. **Review results** — Exported to Excel with best parameters per pair, all results, and the news data used
@@ -52,10 +52,10 @@ The `description_writer.py` tool generates human-readable trading idea descripti
 
 | File | Purpose |
 |------|---------|
-| `Gathering prices main.py` | Download 1h price data via Yahoo Finance |
-| `Analyzing_v13.py` | Main backtest engine (latest version) |
+| `GatheringPrice.py` | Download 1h price data via Yahoo Finance |
+| `Analyzing_v18.py` | Main backtest engine (latest version) |
 | `description_writer.py` | Generate trading idea descriptions |
 | `news.txt` | Sample Forex Factory calendar data |
 | `*_1h.csv` | Price data files |
 | `results/` | Output Excel files |
-| `archive/` | Previous versions (v1–v12) |
+| `archive/` | Previous versions and archived copies of older `Analyzing_v*.py` files |
