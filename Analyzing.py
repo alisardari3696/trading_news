@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import re
+import time
 
 DATA_DIR = Path(".")
 OUTPUT_DIR = DATA_DIR / "results"
@@ -460,51 +461,58 @@ def main():
     fwd_all_sorted = fwd_all.sort_values("total_pnl_percent", ascending=False) if not fwd_all.empty else pd.DataFrame(columns=group_cols + METRIC_COLS)
 
     merged_all = merge_train_fwd(train_all_sorted, fwd_all_sorted, group_cols)
-    merged_all.insert(0, "Strategy_ID", range(1, len(merged_all) + 1))
-    merged_all["total_pnl_delta"] = (merged_all["total_pnl_percent_TRAIN"] - merged_all["total_pnl_percent_FWD"]).abs()
+    
+    # Logic Change: Use average_pnl_percent_delta instead of total_pnl_delta
+    merged_all["avg_pnl_delta"] = (merged_all["average_pnl_percent_TRAIN"] - merged_all["average_pnl_percent_FWD"]).abs()
 
-    ranked = merged_all.sort_values(
-        ["total_pnl_delta", "pair"], ascending=[True, True],
-    ).reset_index(drop=True)
-    ranked.insert(0, "number", range(1, len(ranked) + 1))
-
-    display_cols = ["Strategy_ID"] + group_cols
+    display_cols = group_cols
     for col in METRIC_COLS:
+        if col in ["average_hold_hours", "total_rollover_fee_percent", "average_rollover_fee_percent"]:
+            continue
         t_col = f"{col}_TRAIN"
         f_col = f"{col}_FWD"
         if t_col in merged_all.columns:
             display_cols.append(t_col)
         if f_col in merged_all.columns:
             display_cols.append(f_col)
-        if col == "total_pnl_percent":
-            display_cols.append("total_pnl_delta")
-    merged_all = merged_all[[c for c in display_cols if c in merged_all.columns]]
+        if col == "average_pnl_percent":
+            display_cols.append("avg_pnl_delta")
+    
+    # Filter the entire pool for reporting (All_Results sheet)
+    ranked = merged_all.copy()
+    ranked = ranked.sort_values(["avg_pnl_delta", "pair"], ascending=[True, True]).reset_index(drop=True)
+    ranked["number"] = range(1, len(ranked) + 1)
+    
+    all_res_display = ["number"] + [c for c in display_cols if c in ranked.columns]
+    ranked = ranked[all_res_display]
 
     best_group_cols = ["pair", "sub_mode"] if mode == "candle_colour" else ["pair"]
     best_merged = (
         merged_all.sort_values(
-            best_group_cols + ["total_pnl_delta"],
+            best_group_cols + ["avg_pnl_delta"],
             ascending=[True] * len(best_group_cols) + [True],
         )
         .groupby(best_group_cols, as_index=False)
         .first()
     )
-    best_merged["Strategy_ID"] = range(1, len(best_merged) + 1)
 
-    best_display = ["Strategy_ID"] + best_group_cols + ["tp_percent", "sl_percent", "risk_to_reward_ratio"]
+    best_display = best_group_cols + ["tp_percent", "sl_percent", "risk_to_reward_ratio"]
     for col in METRIC_COLS:
+        if col in ["average_hold_hours", "total_rollover_fee_percent", "average_rollover_fee_percent"]:
+            continue
         t_col = f"{col}_TRAIN"
         f_col = f"{col}_FWD"
         if t_col in best_merged.columns:
             best_display.append(t_col)
         if f_col in best_merged.columns:
             best_display.append(f_col)
-        if col == "total_pnl_percent":
-            best_display.append("total_pnl_delta")
+        if col == "average_pnl_percent":
+            best_display.append("avg_pnl_delta")
     best_merged = best_merged[[c for c in best_display if c in best_merged.columns]]
 
     clean_time = entry_time.replace(":", "")
-    output_file = f"{group}_{clean_time}_v19.xlsx"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_file = f"{group}_{clean_time}_{timestamp}_v20.xlsx"
     OUTPUT_DIR.mkdir(exist_ok=True)
     output_path = OUTPUT_DIR / output_file
 
