@@ -501,167 +501,95 @@ def main():
                     train_metrics = evaluate_strategy_on_slice(pair, sub_mode, tp, sl, train_start, train_end)
                     fwd_metrics = evaluate_strategy_on_slice(pair, sub_mode, tp, sl, fwd_start, fwd_end)
 
-                    if train_metrics["trade_count"] == 0 and fwd_metrics["trade_count"] == 0:
-                        continue
-
-                    train_pnl = train_metrics["total_pnl_percent"]
-                    fwd_pnl = fwd_metrics["total_pnl_percent"]
-                    pnl_delta = abs(train_pnl - fwd_pnl)
-
-                    strategy_rows.append({
-                        "pair": pair,
-                        "sub_mode": sub_mode,
-                        "tp_percent": tp * 100,
-                        "sl_percent": sl * 100,
-                        "tp": tp,
-                        "sl": sl,
-                        "risk_to_reward_ratio": tp / sl,
-                        "train_pnl": train_pnl,
-                        "fwd_pnl": fwd_pnl,
-                        "pnl_delta": pnl_delta,
-                        "train_win_rate": train_metrics["win_rate_percent"],
-                        "fwd_win_rate": fwd_metrics["win_rate_percent"],
-                        "train_avg_pnl": train_metrics["average_pnl_percent"],
-                        "fwd_avg_pnl": fwd_metrics["average_pnl_percent"],
-                    })
+                    if train_metrics["trade_count"] > 0 or fwd_metrics["trade_count"] > 0:
+                        strategy_rows.append({
+                            "pair": pair,
+                            "sub_mode": sub_mode,
+                            "tp": tp,
+                            "sl": sl,
+                            "risk_to_reward_ratio": tp / sl,
+                            "train_pnl": train_metrics["total_pnl_percent"],
+                            "fwd_pnl": fwd_metrics["total_pnl_percent"],
+                            "fwd_avg_pnl": fwd_metrics["average_pnl_percent"],
+                            "pnl_delta": abs(train_metrics["total_pnl_percent"] - fwd_metrics["total_pnl_percent"]),
+                            "train_wr": train_metrics["win_rate_percent"],
+                            "fwd_wr": fwd_metrics["win_rate_percent"]
+                        })
 
                 if not strategy_rows:
-                    continue
-
-                strat_df = pd.DataFrame(strategy_rows)
-
-                # Step A: Sort by lowest pnl_delta ascending
-                strat_df_sorted = strat_df.sort_values("pnl_delta", ascending=True).reset_index(drop=True)
-
-                # Step B: Keep top percentage cutoff lowest delta
-                cutoff_count = max(1, int(np.ceil(len(strat_df_sorted) * top_pct_cutoff)))
-                top_pct_df = strat_df_sorted.iloc[:cutoff_count].copy()
-
-                # Step C: Sort top percentage by highest Forward Test Average PnL (fwd_avg_pnl)
-                top_pct_sorted = top_pct_df.sort_values(
-                    by=["fwd_avg_pnl", "risk_to_reward_ratio"],
-                    ascending=[False, False]
-                ).reset_index(drop=True)
-
-                # Step D: Apply Minimum Acceptable Win Rate filter if set
-                selected_strategy = None
-
-                if min_acceptable_win_rate > 0:
-                    for _, row in top_pct_sorted.iterrows():
-                        if row["train_win_rate"] >= min_acceptable_win_rate and row["fwd_win_rate"] >= min_acceptable_win_rate:
-                            selected_strategy = row
-                            break
-                    
-                    if selected_strategy is None:
-                        rest_sorted = strat_df.sort_values(
-                            by=["fwd_avg_pnl", "risk_to_reward_ratio"],
-                            ascending=[False, False]
-                        ).reset_index(drop=True)
-                        for _, row in rest_sorted.iterrows():
-                            if row["train_win_rate"] >= min_acceptable_win_rate and row["fwd_win_rate"] >= min_acceptable_win_rate:
-                                selected_strategy = row
-                                break
-                else:
-                    selected_strategy = top_pct_sorted.iloc[0]
-
-                if selected_strategy is None:
                     current_trade_logs.append({
                         "Iteration": i + 1,
-                        "Event_Date": history_date.strftime("%Y-%m-%d"),
-                        "UTC_Time": target_time_utc.strftime("%Y-%m-%d %H:%M"),
-                        "Selected_Pair": "None",
-                        "Sub_Mode": "None",
-                        "TP_Percent": np.nan,
-                        "SL_Percent": np.nan,
-                        "RRR": np.nan,
-                        "Train_PnL_Percent": np.nan,
-                        "Fwd_PnL_Percent": np.nan,
-                        "PnL_Delta": np.nan,
-                        "Predicted_Win_Rate_Percent": np.nan,
-                        "Predicted_EV_Percent": np.nan,
-                        "Trade_Executed": False,
-                        "Direction": "None",
-                        "Entry_Price": np.nan,
-                        "Exit_Price": np.nan,
-                        "Exit_Reason": f"No Strategy >= {min_acceptable_win_rate:.0f}% Win Rate",
-                        "Hold_Hours": 0.0,
-                        "Actual_PnL_Percent": 0.0,
+                        "Date": history_date.strftime("%Y-%m-%d"),
+                        "Pair": "None",
+                        "PnL_Percent": 0.0,
                         "Is_Win": 0,
+                        "Reason": "No candidate strategies"
                     })
                     continue
 
-                sel_pair = selected_strategy["pair"]
-                sel_sub_mode = selected_strategy["sub_mode"]
-                sel_tp = selected_strategy["tp"]
-                sel_sl = selected_strategy["sl"]
-                sel_tp_pct = selected_strategy["tp_percent"]
-                sel_sl_pct = selected_strategy["sl_percent"]
-                sel_rrr = selected_strategy["risk_to_reward_ratio"]
+                df_strats = pd.DataFrame(strategy_rows)
+                cutoff_count = max(1, int(np.ceil(len(df_strats) * top_pct_cutoff)))
+                df_filtered = df_strats.sort_values("pnl_delta").iloc[:cutoff_count]
+                df_filtered = df_filtered.sort_values(["fwd_avg_pnl", "risk_to_reward_ratio"], ascending=[False, False])
 
-                pred_win_rate = (selected_strategy["train_win_rate"] + selected_strategy["fwd_win_rate"]) / 2.0
-                pred_expected_value = (selected_strategy["train_avg_pnl"] + selected_strategy["fwd_avg_pnl"]) / 2.0
+                selected_strategy = None
+                for _, row in df_filtered.iterrows():
+                    if row["train_wr"] >= min_acceptable_win_rate and row["fwd_wr"] >= min_acceptable_win_rate:
+                        selected_strategy = row
+                        break
 
-                target_key = (target_idx, sel_pair, sel_sub_mode, sel_tp, sel_sl)
-                trade_executed = False
-                actual_pnl_pct = 0.0
-                is_win = 0
-                exit_reason = "No Trade Signal"
-                hold_hours = 0.0
-                entry_price = np.nan
-                exit_price = np.nan
-                direction = "None"
+                if selected_strategy is None:
+                    # Alternative roll-down: Highest fwd_avg_pnl strategy that meets WR from ENTIRE pool if cutoff fails
+                    alt_sorted = df_strats.sort_values(["fwd_avg_pnl", "risk_to_reward_ratio"], ascending=[False, False])
+                    for _, row in alt_sorted.iterrows():
+                        if row["train_wr"] >= min_acceptable_win_rate and row["fwd_wr"] >= min_acceptable_win_rate:
+                            selected_strategy = row
+                            break
 
-                if target_key in trade_cache:
-                    t_res = trade_cache[target_key]
-                    trade_executed = True
-                    direction = t_res["direction"]
-                    actual_pnl_pct = t_res["pnl_pct"] * 100
-                    is_win = 1 if t_res["pnl_pct"] > 0 else 0
-                    exit_reason = t_res["exit_reason"]
-                    hold_hours = t_res["hold_hours"]
-                    entry_price = t_res["entry_price"]
-                    exit_price = t_res["exit_price"]
+                if selected_strategy is not None:
+                    trade_key = (target_idx, selected_strategy["pair"], selected_strategy["sub_mode"], selected_strategy["tp"], selected_strategy["sl"])
+                    if trade_key in trade_cache:
+                        trade = trade_cache[trade_key]
+                        pnl_val = trade["pnl_pct"] * 100
+                        current_trade_logs.append({
+                            "Iteration": i + 1,
+                            "Date": history_date.strftime("%Y-%m-%d"),
+                            "Pair": selected_strategy["pair"],
+                            "PnL_Percent": pnl_val,
+                            "Is_Win": 1 if pnl_val > 0 else 0,
+                            "Reason": trade["exit_reason"]
+                        })
+                    else:
+                        current_trade_logs.append({
+                            "Iteration": i + 1,
+                            "Date": history_date.strftime("%Y-%m-%d"),
+                            "Pair": "None",
+                            "PnL_Percent": 0.0,
+                            "Is_Win": 0,
+                            "Reason": "Strategy outcome not cached"
+                        })
+                else:
+                    current_trade_logs.append({
+                        "Iteration": i + 1,
+                        "Date": history_date.strftime("%Y-%m-%d"),
+                        "Pair": "None",
+                        "PnL_Percent": 0.0,
+                        "Is_Win": 0,
+                        "Reason": "No strategy meets WR filter"
+                    })
 
-                current_trade_logs.append({
-                    "Iteration": i + 1,
-                    "Event_Date": history_date.strftime("%Y-%m-%d"),
-                    "UTC_Time": target_time_utc.strftime("%Y-%m-%d %H:%M"),
-                    "Selected_Pair": sel_pair,
-                    "Sub_Mode": sel_sub_mode,
-                    "TP_Percent": sel_tp_pct,
-                    "SL_Percent": sel_sl_pct,
-                    "RRR": sel_rrr,
-                    "Train_PnL_Percent": selected_strategy["train_pnl"],
-                    "Fwd_PnL_Percent": selected_strategy["fwd_pnl"],
-                    "PnL_Delta": selected_strategy["pnl_delta"],
-                    "Predicted_Win_Rate_Percent": pred_win_rate,
-                    "Predicted_EV_Percent": pred_expected_value,
-                    "Trade_Executed": trade_executed,
-                    "Direction": direction,
-                    "Entry_Price": entry_price,
-                    "Exit_Price": exit_price,
-                    "Exit_Reason": exit_reason,
-                    "Hold_Hours": hold_hours,
-                    "Actual_PnL_Percent": actual_pnl_pct,
-                    "Is_Win": is_win,
-                })
-
-            if not current_trade_logs:
-                continue
-
-            # Calculate total metrics for this Train / Fwd combination
-            temp_df = pd.DataFrame(current_trade_logs)
-            temp_exec = temp_df[temp_df["Trade_Executed"] == True].copy()
-            total_trades = len(temp_exec)
-
-            actual_win_rate = (temp_exec["Is_Win"].sum() / total_trades * 100) if total_trades > 0 else 0.0
-            actual_total_pnl = temp_exec["Actual_PnL_Percent"].sum() if total_trades > 0 else 0.0
-            actual_ev = temp_exec["Actual_PnL_Percent"].mean() if total_trades > 0 else 0.0
-            max_dd = calculate_max_drawdown(temp_exec["Actual_PnL_Percent"].values / 100) * 100 if total_trades > 0 else 0.0
+            # Calculate Performance for this specific window size
+            trades_executed = [tl["PnL_Percent"] for tl in current_trade_logs if tl["Pair"] != "None"]
+            total_trades = len(trades_executed)
+            actual_total_pnl = sum(trades_executed)
+            actual_win_rate = (sum([1 for pnl in trades_executed if pnl > 0]) / total_trades * 100) if total_trades > 0 else 0.0
+            actual_ev = (actual_total_pnl / total_trades) if total_trades > 0 else 0.0
+            max_dd = calculate_max_drawdown(trades_executed)
 
             grid_results.append({
                 "Train_Size": train_size,
                 "Forward_Size": fwd_size,
+                "Train_Ratio_Percent": (train_size / total_window) * 100,
                 "Total_Window": total_window,
                 "Total_Trades": total_trades,
                 "Actual_Win_Rate_Percent": actual_win_rate,
@@ -670,45 +598,58 @@ def main():
                 "Max_Drawdown_Percent": max_dd
             })
 
-            # Check if this is the absolute best performing configuration
+            # Check if this is the new #1
             if actual_total_pnl > best_overall_pnl:
                 best_overall_pnl = actual_total_pnl
                 best_overall_log = current_trade_logs
                 best_overall_window = (train_size, fwd_size)
 
-            print(f"Tested Config: {train_size:2d} Train + {fwd_size:2d} Forward | Trades: {total_trades:2d} | Actual PnL: {actual_total_pnl:+.2f}% | WR: {actual_win_rate:.1f}%")
-
     if not grid_results:
-        print("No valid grid search configurations completed.")
+        print("No valid grid results produced.")
         return
 
-    grid_df = pd.DataFrame(grid_results)
-    grid_df = grid_df.sort_values(by="Actual_Total_PnL_Percent", ascending=False).reset_index(drop=True)
+    # SAVE RESULTS
+    grid_df = pd.DataFrame(grid_results).sort_values("Actual_Total_PnL_Percent", ascending=False)
+    log_df = pd.DataFrame(best_overall_log)
+    
+    # Generate heatmap data: ForwardSize on X (Columns), TrainSize on Y (Index)
+    heatmap_df = pd.DataFrame(grid_results).pivot(index="Train_Size", columns="Forward_Size", values="Actual_Total_PnL_Percent")
 
-    print("\n====================================================================================")
-    print("                      WINDOW GRID SEARCH RESULTS SUMMARY (SORTED BY TOTAL PNL)")
-    print("====================================================================================")
-    print(grid_df.to_string(index=False))
-    print("====================================================================================\n")
-
-    print(f"Absolute Best Window Configuration: {best_overall_window[0]} Train + {best_overall_window[1]} Forward Test")
-    print(f"Generating Excel spreadsheet report with full summary and detailed best logs...")
-
-    clean_time = entry_time.replace(":", "")
-    output_file = f"{group}_{clean_time}_window_grid_search.xlsx"
     OUTPUT_DIR.mkdir(exist_ok=True)
-    output_path = OUTPUT_DIR / output_file
+    import time
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_name = f"{group}_{timestamp}_window_grid_search.xlsx"
+    out_path = OUTPUT_DIR / out_name
 
-    best_log_df = pd.DataFrame(best_overall_log)
-
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         grid_df.to_excel(writer, sheet_name="Window_Grid_Summary", index=False)
-        best_log_df.to_excel(writer, sheet_name="Best_Window_Trade_Log", index=False)
-        for sheet_name in writer.sheets:
-            writer.sheets[sheet_name].freeze_panes = "A2"
+        heatmap_df.to_excel(writer, sheet_name="PnL_Heatmap")
+        log_df.to_excel(writer, sheet_name="Best_Window_Trade_Log", index=False)
 
-    print(f"Results successfully saved to {output_path}")
-
+        # Apply Conditional Formatting to Heatmap
+        from openpyxl.formatting.rule import ColorScaleRule
+        ws = writer.sheets["PnL_Heatmap"]
+        # Find the range (from B2 to the bottom right corner)
+        max_col = ws.max_column
+        max_row = ws.max_row
+        import openpyxl.utils
+        col_letter = openpyxl.utils.get_column_letter(max_col)
+        cell_range = f"B2:{col_letter}{max_row}"
+        
+        # Color Scale: Red (Low) -> White (Middle) -> Green (High)
+        ws.conditional_formatting.add(
+            cell_range,
+            ColorScaleRule(
+                start_type='num', start_value=-10, start_color='F8696B', # Red
+                mid_type='num', mid_value=0, mid_color='FFFFFF',        # White
+                end_type='num', end_value=10, end_color='63BE7B'        # Green
+            )
+        )
+        
+    print(f"\n--- GRID SEARCH FINISHED ---")
+    print(f"File saved: {out_path}")
+    print(f"Best Window configuration found: {best_overall_window} (Train/Forward)")
+    print(f"Total entries in grid: {len(grid_df)}")
 
 if __name__ == "__main__":
     main()
