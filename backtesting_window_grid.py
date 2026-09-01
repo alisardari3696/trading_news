@@ -7,8 +7,8 @@ import re
 DATA_DIR = Path(".")
 OUTPUT_DIR = DATA_DIR / "results"
 
-TP_VALUES = [x / 1000 for x in range(1, 11)]
-SL_VALUES = [x / 1000 for x in range(1, 11)]
+TP_VALUES = [x / 1000 for x in range(1, 8)]
+SL_VALUES = [x / 1000 for x in range(1, 8)]
 
 SAME_CANDLE_RULE = "sl_first"
 ESTIMATED_ROLLOVER_FEE_PERCENT_PER_DAY = 0.01
@@ -77,8 +77,8 @@ def choose_grid_settings():
     min_fwd = int(input("Min Forward Test Window Size (default 3): ").strip() or 3)
     max_fwd = int(input("Max Forward Test Window Size (default 13): ").strip() or 13)
 
-    cutoff_str = input("Top Lowest Delta Percentage Cutoff (e.g., 15 or 30) (default 30): ").strip()
-    top_pct = float(cutoff_str) / 100.0 if cutoff_str.replace(".", "", 1).isdigit() else 0.30
+    cutoff_str = input("Top Lowest Delta Percentage Cutoff (e.g., 15 or 30) (default 50): ").strip()
+    top_pct = float(cutoff_str) / 100.0 if cutoff_str.replace(".", "", 1).isdigit() else 0.50
 
     min_wr_str = input("Minimum Acceptable Win Rate % (e.g., 50) (default 50): ").strip()
     min_win_rate = float(min_wr_str) if min_wr_str.replace(".", "", 1).isdigit() else 50.0
@@ -485,6 +485,7 @@ def main():
                 
             num_iterations = total_events - total_window
             current_trade_logs = []
+            skipped_count = 0
 
             for i in range(num_iterations):
                 train_start, train_end = i, i + train_size
@@ -511,12 +512,13 @@ def main():
                             "train_pnl": train_metrics["total_pnl_percent"],
                             "fwd_pnl": fwd_metrics["total_pnl_percent"],
                             "fwd_avg_pnl": fwd_metrics["average_pnl_percent"],
-                            "pnl_delta": abs(train_metrics["total_pnl_percent"] - fwd_metrics["total_pnl_percent"]),
+                            "avg_pnl_delta": abs(train_metrics["average_pnl_percent"] - fwd_metrics["average_pnl_percent"]),
                             "train_wr": train_metrics["win_rate_percent"],
                             "fwd_wr": fwd_metrics["win_rate_percent"]
                         })
 
                 if not strategy_rows:
+                    skipped_count += 1
                     current_trade_logs.append({
                         "Iteration": i + 1,
                         "Date": history_date.strftime("%Y-%m-%d"),
@@ -529,20 +531,25 @@ def main():
 
                 df_strats = pd.DataFrame(strategy_rows)
                 cutoff_count = max(1, int(np.ceil(len(df_strats) * top_pct_cutoff)))
-                df_filtered = df_strats.sort_values("pnl_delta").iloc[:cutoff_count]
+                df_filtered = df_strats.sort_values("avg_pnl_delta").iloc[:cutoff_count]
                 df_filtered = df_filtered.sort_values(["fwd_avg_pnl", "risk_to_reward_ratio"], ascending=[False, False])
 
                 selected_strategy = None
                 for _, row in df_filtered.iterrows():
-                    if row["train_wr"] >= min_acceptable_win_rate and row["fwd_wr"] >= min_acceptable_win_rate:
+                    if (row["train_wr"] >= min_acceptable_win_rate and
+                        row["fwd_wr"] >= min_acceptable_win_rate and
+                        row["train_pnl"] > 0 and
+                        row["fwd_pnl"] > 0):
                         selected_strategy = row
                         break
 
                 if selected_strategy is None:
-                    # Alternative roll-down: Highest fwd_avg_pnl strategy that meets WR from ENTIRE pool if cutoff fails
                     alt_sorted = df_strats.sort_values(["fwd_avg_pnl", "risk_to_reward_ratio"], ascending=[False, False])
                     for _, row in alt_sorted.iterrows():
-                        if row["train_wr"] >= min_acceptable_win_rate and row["fwd_wr"] >= min_acceptable_win_rate:
+                        if (row["train_wr"] >= min_acceptable_win_rate and
+                            row["fwd_wr"] >= min_acceptable_win_rate and
+                            row["train_pnl"] > 0 and
+                            row["fwd_pnl"] > 0):
                             selected_strategy = row
                             break
 
@@ -569,13 +576,14 @@ def main():
                             "Reason": "Strategy outcome not cached"
                         })
                 else:
+                    skipped_count += 1
                     current_trade_logs.append({
                         "Iteration": i + 1,
                         "Date": history_date.strftime("%Y-%m-%d"),
                         "Pair": "None",
                         "PnL_Percent": 0.0,
                         "Is_Win": 0,
-                        "Reason": "No strategy meets WR filter"
+                        "Reason": "No strategy with positive train & fwd PnL"
                     })
 
             # Calculate Performance for this specific window size
@@ -592,6 +600,7 @@ def main():
                 "Train_Ratio_Percent": (train_size / total_window) * 100,
                 "Total_Window": total_window,
                 "Total_Trades": total_trades,
+                "Skipped_Trades": skipped_count,
                 "Actual_Win_Rate_Percent": actual_win_rate,
                 "Actual_Total_PnL_Percent": actual_total_pnl,
                 "Actual_EV_Percent": actual_ev,
@@ -650,6 +659,8 @@ def main():
     print(f"File saved: {out_path}")
     print(f"Best Window configuration found: {best_overall_window} (Train/Forward)")
     print(f"Total entries in grid: {len(grid_df)}")
+    total_skipped = sum(r["Skipped_Trades"] for r in grid_results)
+    print(f"Total trades skipped (no positive PnL strategy): {total_skipped}")
 
 if __name__ == "__main__":
     main()
