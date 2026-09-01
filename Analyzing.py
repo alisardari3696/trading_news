@@ -8,8 +8,8 @@ import time
 DATA_DIR = Path(".")
 OUTPUT_DIR = DATA_DIR / "results"
 
-TP_VALUES = [x / 1000 for x in range(1, 11)]
-SL_VALUES = [x / 1000 for x in range(1, 11)]
+TP_VALUES = [x / 1000 for x in range(1, 8)]
+SL_VALUES = [x / 1000 for x in range(1, 8)]
 
 SAME_CANDLE_RULE = "sl_first"
 ESTIMATED_ROLLOVER_FEE_PERCENT_PER_DAY = 0.01
@@ -79,6 +79,19 @@ def choose_custom_windows():
     fwd_size = int(fwd_str) if fwd_str.isdigit() else 5
 
     return train_size, fwd_size
+
+
+def choose_data_cutoff():
+    print("\n--- Results Display Filter ---")
+    pct_str = input("Keep top % of strategies by lowest |Avg PnL Delta| (e.g., 50 cuts the worst half): ").strip()
+    try:
+        pct = float(pct_str)
+        if not 0 < pct <= 100:
+            raise ValueError
+    except ValueError:
+        print("Invalid percentage. Keeping 100% of results.")
+        return 100.0
+    return pct
 
 
 def load_csv(pair):
@@ -373,6 +386,8 @@ def main():
 
     train_window_size, fwd_window_size = choose_custom_windows()
 
+    keep_pct = choose_data_cutoff()
+
     news_df = paste_news_data(group, entry_time, inverted_event, mode)
     if news_df is None:
         return
@@ -464,6 +479,16 @@ def main():
     
     # Logic Change: Use average_pnl_percent_delta instead of total_pnl_delta
     merged_all["avg_pnl_delta"] = (merged_all["average_pnl_percent_TRAIN"] - merged_all["average_pnl_percent_FWD"]).abs()
+
+    if not merged_all.empty and keep_pct < 100.0:
+        total_rows = len(merged_all)
+        keep_count = max(1, int(np.ceil(total_rows * keep_pct / 100.0)))
+        merged_all = (
+            merged_all.sort_values("avg_pnl_delta", ascending=True)
+            .head(keep_count)
+            .reset_index(drop=True)
+        )
+        print(f"\n|Avg PnL Delta| cutoff ({keep_pct:g}%): kept {keep_count} of {total_rows} strategies.")
 
     display_cols = group_cols
     for col in METRIC_COLS:
